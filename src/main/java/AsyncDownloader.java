@@ -18,39 +18,42 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.net.URI;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.*;
 
 import static java.net.HttpURLConnection.HTTP_OK;
 
 public class AsyncDownloader {
-    protected LinkedBlockingQueue<String> downloadQueue = new LinkedBlockingQueue<>();
-    protected LinkedBlockingQueue<String> uploadQueue = new LinkedBlockingQueue<>();
-    protected LinkedBlockingQueue<String> deleteQueue = new LinkedBlockingQueue<>();
+    private LinkedBlockingQueue<String> downloadQueue = new LinkedBlockingQueue<>();
+    private LinkedBlockingQueue<String> uploadQueue = new LinkedBlockingQueue<>();
+    private LinkedBlockingQueue<String> deleteQueue = new LinkedBlockingQueue<>();
 
     public void download() {
         downloadQueue.addAll(getFilenameSet());
 
-        Thread downloadThread = new Thread(this::fileDownloader);
-        Thread uploadThread = new Thread(this::fileUploader);
-        Thread deleteThread = new Thread(this::fileDeleter);
+        ExecutorService service = Executors.newFixedThreadPool(3);
 
+        Future task1 = null;
+        Future task2 = null;
+        Future task3 = null;
+        long start = System.currentTimeMillis();
         do {
-
-            if (!downloadQueue.isEmpty() && !downloadThread.isAlive()) {
-                downloadThread = new Thread(this::fileDownloader);
-                downloadThread.start();
+            if (task1 == null || task1.isCancelled() || task1.isDone()) {
+                task1 = service.submit(this::fileDownloader);
             }
-            if (!uploadQueue.isEmpty() && !uploadThread.isAlive()) {
-                uploadThread = new Thread(this::fileUploader);
-                uploadThread.start();
+            if (task2 == null || task2.isCancelled() || task2.isDone()) {
+                task2 = service.submit(this::fileUploader);
             }
-            if (!deleteQueue.isEmpty() && !deleteThread.isAlive()) {
-                deleteThread = new Thread(this::fileDeleter);
-                deleteThread.start();
+            if (task3 == null || task3.isCancelled() || task3.isDone()) {
+                task3 = service.submit(this::fileDeleter);
             }
-        } while (!deleteQueue.isEmpty() || !uploadQueue.isEmpty() || !downloadQueue.isEmpty()
-                || downloadThread.isAlive() || uploadThread.isAlive() || deleteThread.isAlive());
+            if ((System.currentTimeMillis() - start) / 1000 > 3) {
+                System.out.println("Download left: " + downloadQueue.size()
+                        + "\nUpload left: " + uploadQueue.size()
+                        + "\nDelete left: " + deleteQueue.size());
+                start = System.currentTimeMillis();
+            }
+        } while (!deleteQueue.isEmpty() || !uploadQueue.isEmpty() || !downloadQueue.isEmpty());
+        service.shutdown();
     }
 
     private void fileDeleter() {
@@ -79,19 +82,22 @@ public class AsyncDownloader {
         try (CloseableHttpAsyncClient client = HttpAsyncClients.createDefault()) {
             client.start();
             MultipartEntityBuilder entityBuilder = MultipartEntityBuilder.create();
-            HttpPost request = new HttpPost();
+            HttpPost link = new HttpPost();
+
             if (!uploadQueue.isEmpty()) {
                 String filename = uploadQueue.take();
                 HttpEntity fileEntity = entityBuilder.addBinaryBody("file", new File(filename)).build();
-                request.setEntity(fileEntity);
-                request.addHeader("filename", filename);
-                request.setURI(URI.create("http://localhost:8080/newStorage/files/"));
-
+                link.setEntity(fileEntity);
+                link.addHeader("filename", filename);
+                link.setURI(URI.create("http://localhost:8080/newStorage/files/"));
             }
+
             CountDownLatch latch = new CountDownLatch(1);
 
-            String filename = request.getFirstHeader("filename").getValue();
-            client.execute(request, new UploadHandler(latch, filename));
+
+            String filename = link.getFirstHeader("filename").getValue();
+            client.execute(link, new UploadHandler(latch, filename));
+
             latch.await();
         } catch (IOException | InterruptedException e) {
             e.printStackTrace();
@@ -102,7 +108,7 @@ public class AsyncDownloader {
         try (CloseableHttpAsyncClient client = HttpAsyncClients.custom().build()) {
             client.start();
             ArrayList<HttpGet> links = new ArrayList<>();
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 40; i++) {
                 if (!downloadQueue.isEmpty())
                     links.add(new HttpGet("http://localhost:8080/oldStorage/files/" + downloadQueue.take()));
                 else break;
@@ -120,6 +126,7 @@ public class AsyncDownloader {
         }
     }
 
+    @SuppressWarnings("DuplicatedCode")
     private Set<String> getFilenameSet() {
         String url = "http://localhost:8080/oldStorage/files";
         String body = null;
