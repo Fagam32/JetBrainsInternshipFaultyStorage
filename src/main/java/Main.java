@@ -7,8 +7,9 @@ public class Main {
 //            File file = new File(i + ".txt");
 //            file.delete();
 //        }
-        AsyncDownloader asyncdownloader = new AsyncDownloader();
-        asyncdownloader.download();
+//        AsyncDownloader asyncdownloader = new AsyncDownloader();
+//        asyncdownloader.download();
+        
         Downloader plainDownloader = new Downloader();
         plainDownloader.start(); //ATTENTION works very slow
     }
